@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zone X - Gegner-KI & Richtungsanzeige V2</title>
+    <title>Zone X - Persistente Items</title>
     <style>
         body { 
             margin: 0; 
@@ -110,59 +110,43 @@
     </script>
 
     <script type="module">
-        // Importiert die Three.js Bibliothek
         import * as THREE from 'three';
         
-        // Deklariert eine Variable für das Tone.js Objekt
         let Tone; 
         try {
-            // Versucht, Tone.js dynamisch zu importieren
             const importedModule = await import('tone');
-            // Prüft verschiedene Wege, wie das Tone-Objekt exportiert sein könnte
             if (importedModule.default && typeof importedModule.default.Synth === 'function') {
                 Tone = importedModule.default;
             } else if (importedModule.Tone && typeof importedModule.Tone.Synth === 'function') { 
                 Tone = importedModule.Tone;
             } else if (importedModule && typeof importedModule.Synth === 'function') {
                 Tone = importedModule;
-            } else if (window.Tone && typeof window.Tone.Synth === 'function') { // Fallback für globale Registrierung
+            } else if (window.Tone && typeof window.Tone.Synth === 'function') {
                 Tone = window.Tone;
             } else {
-                Tone = null; // Tone.js konnte nicht korrekt initialisiert werden
+                Tone = null;
             }
-            // if (!Tone) console.warn("Tone.js Auflösung fehlgeschlagen. Sounds werden deaktiviert."); // Für Debugging
         } catch (e) {
-            console.warn("Tone.js konnte NICHT via Import geladen werden. Sounds werden deaktiviert.", e);
+            console.warn("Tone.js could NOT be loaded via import. Sounds will be disabled.", e);
             Tone = null;
         }
 
-        // === Globale Spielvariablen ===
+        // Globale Spielvariablen
         let scene, camera, renderer, sphereMesh, raycaster, mouse, ambientLight, sphereGroup, starField;
-        
-        // Speichert Daten für jedes Dreieck der Sphäre (ID, Vertices, Mittelpunkt, Typ, Nachbarn etc.)
         let gameTriangles = []; 
-        
-        // ID des Dreiecks, auf dem sich der Spieler befindet (-1 wenn kein Spieler)
         let playerTriangleId = -1;
-        // ID des Dreiecks, über dem sich der Mauszeiger aktuell befindet
         let hoveredTriangleId = -1;
-        // Zielrotation für die sphereGroup, um den Spieler im Fokus zu halten
         let targetSphereQuaternion = new THREE.Quaternion();
-        // Radius der Spiel-Sphäre
         const sphereRadius = 10;
-        // Anzahl der Unterteilungen des Ikosaeders (beeinflusst Dreiecksanzahl)
-        const subdivisions = 4; // Ergibt 20 * 4^4 = 5120 Dreiecke
+        const subdivisions = 4; 
 
-        // Cooldown-Zeiten für Spieler- und Gegnerbewegungen in Millisekunden
         const PLAYER_MOVE_COOLDOWN = 0; 
         const ENEMY_MOVE_COOLDOWN = 500; 
-        // Zeitstempel der letzten Spielerbewegung
         let lastPlayerMoveTime = 0;
-        // Array zur Speicherung aller Gegnerobjekte
-        let enemies = []; // Jeder Eintrag: { id: number, currentTriangleId: number, lastMoveTime: number, currentFacingDirectionId: number | null, directionArrow: THREE.Mesh | null, previousMoveFromId: number | null }
+        let enemies = []; 
 
 
-        // === Spielstatus-Variablen ===
+        // Spielstatus
         let playerLives = 3; 
         const MAX_PLAYER_LIVES = 3; 
         
@@ -170,7 +154,6 @@
         Object.defineProperty(window, 'numKeys', { 
             get: () => _numKeys,
             set: (value) => {
-                // console.log(`numKeys geändert: Alt=${_numKeys}, Neu=${value}`); 
                 _numKeys = value;
             }
         });
@@ -180,7 +163,6 @@
         Object.defineProperty(window, 'numChests', {
             get: () => _numChests,
             set: (value) => {
-                // console.log(`numChests geändert: Alt=${_numChests}, Neu=${value}`); 
                 _numChests = value;
             }
         });
@@ -190,7 +172,6 @@
         Object.defineProperty(window, 'playerKeysHeld', {
             get: () => _playerKeysHeld,
             set: (value) => {
-                // console.log(`playerKeysHeld geändert: Alt=${_playerKeysHeld}, Neu=${value}`); 
                 _playerKeysHeld = value;
             }
         });
@@ -200,7 +181,6 @@
         Object.defineProperty(window, 'keysDelivered', {
             get: () => _keysDelivered,
             set: (value) => {
-                // console.log(`keysDelivered geändert: Alt=${_keysDelivered}, Neu=${value}`); 
                 _keysDelivered = value;
             }
         });
@@ -213,7 +193,7 @@
         let startScreenTimeout; 
         let startScreenActive = true; 
 
-        // === Farbdefinitionen für das futuristische Design ===
+        // Farben - Futuristisch
         const COLOR_DEFAULT = new THREE.Color(0x1A1A2E); 
         const COLOR_PLAYER = new THREE.Color(0x00FFAA);   
         const COLOR_WALL = new THREE.Color(0x4B527E);     
@@ -233,26 +213,26 @@
         const COLOR_WARP_IN_ENEMY = new THREE.Color(0xFF8888); 
         const COLOR_ENEMY_ARROW = new THREE.Color(0xF0F0F0); 
         
-        // === Pathfinding & Auto-Move Variablen ===
+        // Pathfinding & Auto-Move Variablen
         let isAutoMoving = false; 
         let autoMovePath = [];    
         let nextAutoMoveTime = 0; 
         const PATH_HIGHLIGHT_DURATION = 20; 
 
-        // === Soundeffekt-Variablen (werden in initializeSounds() initialisiert) ===
+        // Soundeffekte
         let audioContextStarted = false; 
         let hoverSynth, moveSynth, keyPickupSynth, chestDeliverySynth, winSynth, loseSynth, pathStartSynth, wallHitSynth, pathCancelSynth, errorSynth, lifeLostSynth, startScreenSynth;
 
-        // === Zoom Variablen ===
+        // Zoom Variablen
         const MIN_ZOOM_DISTANCE = sphereRadius * 1.1; 
         const MAX_ZOOM_DISTANCE = sphereRadius * 5;   
         const ZOOM_SPEED = 0.0005; 
 
-        // === Animationsvariablen ===
+        // Animationen
         const WARP_ANIM_DURATION = 60; 
 
 
-        // === Hauptinitialisierungsfunktion des Spiels ===
+        // Initialisierung
         async function init() {
             scene = new THREE.Scene();
             scene.background = ORIGINAL_BACKGROUND_COLOR.clone(); 
@@ -312,7 +292,6 @@
             animate(); 
         }
 
-        // Funktion, die nach dem Startbildschirm das eigentliche Spiel startet
         async function startGame() {
             if (!startScreenActive) return; 
             startScreenActive = false; 
@@ -338,7 +317,6 @@
         }
 
 
-        // Stellt sicher, dass der AudioContext von Tone.js durch eine Benutzerinteraktion gestartet wird
         async function ensureAudioContextStarted() {
             if (!Tone || !Tone.context) return; 
             if (!audioContextStarted && Tone.context.state !== 'running') {
@@ -346,12 +324,11 @@
                     await Tone.start(); 
                     audioContextStarted = true;
                 } catch (e) {
-                    console.error("Fehler beim Starten des AudioContext:", e);
+                    console.error("Error starting AudioContext:", e);
                 }
             }
         }
 
-        // Initialisiert alle Soundeffekte des Spiels
         function initializeSounds() {
             const shortImpact = { attack: 0.001, decay: 0.08, sustain: 0, release: 0.05 };
 
@@ -418,7 +395,6 @@
             }).toDestination();
         }
 
-        // Hilfsfunktion zum Abspielen von Sounds
         function playSound(synth, noteOrTimeToTrigger, duration = "8n", time) {
             if (!Tone || !synth || !audioContextStarted) return; 
             
@@ -434,75 +410,64 @@
                 else if (synth instanceof Tone.PolySynth || synth instanceof Tone.Synth) { 
                      synth.triggerAttackRelease(noteOrTimeToTrigger, duration, playTime);
                 }
-            } catch (e) { /* Fehler beim Abspielen ignorieren, um Spiel nicht zu blockieren */ }
+            } catch (e) { /* console.warn(`Sound playback failed:`, e); */ }
         }
         
-        // Funktion zur Anzeige von Nachrichten (aktuell nur Konsolenausgabe und optionaler Fehlersound)
         function showMessage(text) { 
             console.log("Game Message (Dialog suppressed):", text); 
-            // Spielt einen Fehler-Sound für bestimmte Nachrichtentypen
             if (text.toLowerCase().includes("kann nicht") || text.toLowerCase().includes("kein pfad") || text.toLowerCase().includes("brauchst einen schlüssel") || text.toLowerCase().includes("bereits benutzt")) {
                 playSound(errorSynth, null, "16n"); 
             }
         }
 
-        // Löst einen kurzen visuellen Blitz des Szenenhintergrunds aus
         function triggerBackgroundFlash() {
             if (scene) {
                 scene.background = COLOR_BACKGROUND_FLASH.clone();
                 setTimeout(() => {
                     if (scene) scene.background = ORIGINAL_BACKGROUND_COLOR.clone();
-                }, 120); // Dauer des Blitzes in ms
+                }, 120); 
             }
         }
 
-        // Erstellt das Sternenfeld im Hintergrund
         function createStarfield() {
-            const starQty = 35000; // Anzahl der Sterne
-            const starVertices = []; // Array für Sternpositionen
-            const starColors = [];   // Array für Sternfarben
+            const starQty = 35000; 
+            const starVertices = []; 
+            const starColors = [];   
 
-            // Material für die Sterne
             const starMaterial = new THREE.PointsMaterial({
-                size: 0.3, // Basisgröße der Sterne
-                sizeAttenuation: true, // Größe nimmt mit Entfernung ab
-                color: 0xffffff,       // Standardfarbe (wird von vertexColors überschrieben)
-                vertexColors: true,    // Farben pro Stern verwenden
+                size: 0.3, 
+                sizeAttenuation: true, 
+                color: 0xffffff,       
+                vertexColors: true,    
                 transparent: true,
-                opacity: 0.8,          // Basis-Opazität
-                blending: THREE.AdditiveBlending, // Sterne addieren ihre Helligkeit bei Überlappung
-                depthWrite: false      // Verhindert, dass Sterne andere transparente Objekte verdecken
+                opacity: 0.8,          
+                blending: THREE.AdditiveBlending, 
+                depthWrite: false      
             });
 
             const starGeometry = new THREE.BufferGeometry();
 
-            // Generiert Positionen und Farben für jeden Stern
             for (let i = 0; i < starQty; i++) {
-                // Zufällige Position in einem großen Würfel
                 let x = THREE.MathUtils.randFloatSpread(sphereRadius * 30); 
                 let y = THREE.MathUtils.randFloatSpread(sphereRadius * 30);
                 let z = THREE.MathUtils.randFloatSpread(sphereRadius * 30);
                 
-                // Stellt sicher, dass Sterne nicht zu nah an/in der Spielsphäre sind
                 const distSq = x*x + y*y + z*z;
                 if (distSq < (sphereRadius * 2.5) * (sphereRadius * 2.5)) { 
-                    // Wenn zu nah, neue Position weiter außen generieren
                     const r = sphereRadius * 2.5 + Math.random() * sphereRadius * 20;
-                    const phi = Math.random() * Math.PI * 2; // Azimut-Winkel
-                    const theta = Math.random() * Math.PI;   // Polar-Winkel
+                    const phi = Math.random() * Math.PI * 2; 
+                    const theta = Math.random() * Math.PI;   
                     x = r * Math.sin(theta) * Math.cos(phi);
                     y = r * Math.sin(theta) * Math.sin(phi);
                     z = r * Math.cos(theta);
                 }
                 starVertices.push(x, y, z);
 
-                // Berechnet Helligkeit und Farbe basierend auf Distanz und Zufall
                 const distanceFromCenter = Math.sqrt(x*x + y*y + z*z);
                 const baseBrightness = 0.6 + Math.random() * 0.4; 
                 const brightness = Math.max(0.2, baseBrightness * (1 - Math.min(1, distanceFromCenter / (sphereRadius * 25))));
                 
                 const starColor = new THREE.Color();
-                // Zufällige Farbvariation (bläulich, gelblich, weißlich)
                 if (Math.random() < 0.3) {
                     starColor.setHSL(0.6, 0.8, brightness * 0.8); 
                 } else if (Math.random() < 0.6) {
@@ -513,17 +478,14 @@
                 starColors.push(starColor.r, starColor.g, starColor.b);
             }
 
-            // Setzt die Attribute für die Sterngeometrie
             starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
             starGeometry.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
 
-            // Erstellt das Points-Objekt für das Sternenfeld
             starField = new THREE.Points(starGeometry, starMaterial);
-            sphereGroup.add(starField); // Fügt das Sternenfeld zur sphereGroup hinzu
+            sphereGroup.add(starField); 
         }
 
 
-        // Generiert die triangulierte Spiel-Sphäre aus einem Ikosaeder
         function generateSphere() {
             let vertices = []; 
             let faces = [];    
@@ -590,8 +552,8 @@
                     id: faceIdx, vertexIndices: faceIndices, vertices: [vA, vB, vC],
                     center: center, normal: normal, type: 'EMPTY', 
                     originalColor: COLOR_DEFAULT.clone(), neighbors: [], isPathSegment: false,
-                    isWarpingOut: false, isWarpingIn: false, warpTime: 0, 
-                    isUsedChest: false 
+                    isWarpingOut: false, isWarpingIn: false, warpTime: 0, warpingEntityType: null, // warpingEntityType hinzugefügt
+                    isUsedChest: false, occupant: null // occupant hinzugefügt
                 });
             });
 
@@ -612,7 +574,6 @@
             sphereGroup.add(sphereMesh); 
         }
 
-        // Berechnet die angrenzenden Dreiecke für jedes Dreieck der Sphäre
         function calculateAdjacencies() {
             const edgeMap = new Map(); 
             gameTriangles.forEach(tri => {
@@ -640,16 +601,14 @@
             });
         }
         
-        // Erstellt eine hohle Wandstruktur
         function createHollowWallStructure(centerId, innerRadius, wallThickness, maxWallsToPlace) {
             if (!gameTriangles[centerId] || gameTriangles[centerId].type === 'WALL') {
-                return 0; // Zentrum nicht gültig oder bereits Wand
+                return 0; 
             }
 
             let placedWallsThisStructure = 0;
-            const occupiedByThisStructure = new Set(); // Verfolgt von dieser Struktur belegte Felder
+            const occupiedByThisStructure = new Set(); 
 
-            // 1. Innenraum definieren (BFS)
             const innerRoomTriangles = new Set();
             let queue = [{ id: centerId, depth: 0 }];
             const visitedForRoom = new Set([centerId]);
@@ -674,14 +633,13 @@
                 }
             }
             
-            // 2. Wände um den Innenraum definieren (BFS für Dicke)
             const wallCandidateQueue = [];
             innerRoomTriangles.forEach(roomId => {
                 const roomTri = gameTriangles[roomId];
                 if (roomTri && roomTri.neighbors) {
                     roomTri.neighbors.forEach(neighborId => {
                         if (!innerRoomTriangles.has(neighborId) && gameTriangles[neighborId] && gameTriangles[neighborId].type !== 'WALL') {
-                            if(!Array.from(wallCandidateQueue).find(item => item.id === neighborId)) { // Duplikate vermeiden
+                            if(!Array.from(wallCandidateQueue).find(item => item.id === neighborId)) { 
                                 wallCandidateQueue.push({ id: neighborId, depth: 0 });
                             }
                         }
@@ -690,14 +648,14 @@
             });
             
             const visitedForWalls = new Set();
-            innerRoomTriangles.forEach(id => visitedForWalls.add(id)); // Innenraum nicht als Wand
+            innerRoomTriangles.forEach(id => visitedForWalls.add(id)); 
 
             while(wallCandidateQueue.length > 0 && placedWallsThisStructure < maxWallsToPlace) {
                 const currentWallCandidate = wallCandidateQueue.shift();
                 if (visitedForWalls.has(currentWallCandidate.id)) continue;
                 
                 const tri = gameTriangles[currentWallCandidate.id];
-                if (tri && tri.type !== 'WALL') { // Nur setzen, wenn nicht bereits Wand
+                if (tri && tri.type !== 'WALL') { 
                     tri.type = 'WALL';
                     occupiedByThisStructure.add(tri.id);
                     placedWallsThisStructure++;
@@ -718,15 +676,21 @@
         }
 
 
-        // Generiert das Spielllevel durch zufällige Platzierung von Elementen und strukturierten Wänden
         function generateLevel() {
-            // Initialisiere alle Dreiecke als leer
-            gameTriangles.forEach(tri => tri.type = 'EMPTY');
+            gameTriangles.forEach(tri => {
+                tri.type = 'EMPTY';
+                tri.occupant = null;
+                tri.isUsedChest = false;
+                tri.isPathSegment = false;
+                tri.isWarpingIn = false;
+                tri.isWarpingOut = false;
+            });
+
 
             const numTotalTriangles = gameTriangles.length;
             if (numTotalTriangles === 0) return;
 
-            const numWallsTarget = Math.floor(numTotalTriangles * 0.10); // Ziel: 10% Wände
+            const numWallsTarget = Math.floor(numTotalTriangles * 0.10); 
             let placedWallsCount = 0;
             
             window.numKeys = Math.max(1, Math.floor(numTotalTriangles / 100)); 
@@ -735,28 +699,23 @@
             const occupiedByAnyStructure = new Set(); 
 
             let attempts = 0;
-            const maxStructurePlacementAttempts = 30; // Maximale Versuche, Strukturen zu platzieren
+            const maxStructurePlacementAttempts = 30; 
 
-            // Platziere strukturierte Wände/Räume
             while (placedWallsCount < numWallsTarget && attempts < maxStructurePlacementAttempts) {
                 attempts++;
-                // Wähle ein zufälliges, leeres Feld als mögliches Zentrum einer neuen Struktur
                 const potentialCenterIds = gameTriangles.filter(t => !occupiedByAnyStructure.has(t.id) && t.type === 'EMPTY').map(t => t.id);
                 if (potentialCenterIds.length === 0) break; 
 
                 const centerId = potentialCenterIds[Math.floor(Math.random() * potentialCenterIds.length)];
                 
-                // Variiere den Innenradius für unterschiedlich große Räume
-                const innerRadius = Math.floor(Math.random() * 3) + 2; // Radius von 2 bis 4 für größere Räume
-                const wallThickness = 1; // Wanddicke bleibt 1
-                // Erlaube größeren Strukturen, mehr Wände zu verbrauchen
-                const maxWallsForThisStructure = Math.min(70, numWallsTarget - placedWallsCount); // Erhöhtes Budget pro Struktur
+                const innerRadius = Math.floor(Math.random() * 3) + 2; 
+                const wallThickness = 1; 
+                const maxWallsForThisStructure = Math.min(70, numWallsTarget - placedWallsCount); 
 
                 const wallsAdded = createHollowWallStructure(centerId, innerRadius, wallThickness, maxWallsForThisStructure);
                 
                 if (wallsAdded > 0) {
                     placedWallsCount += wallsAdded;
-                    // Markiere die von dieser Struktur (Raum + Wand) belegten Felder
                     let structureQueue = [{id: centerId, depth: 0}];
                     let visitedForStructure = new Set([centerId]);
                     occupiedByAnyStructure.add(centerId);
@@ -775,7 +734,6 @@
                 }
             }
             
-            // Platziere Start, Exit, Spieler, Schlüssel, Truhen auf EMPTY Feldern
             let availableTrianglesForItems = gameTriangles.filter(t => t.type === 'EMPTY').map(t => t.id);
             function getRandomAvailableItemTriangle() {
                 if (availableTrianglesForItems.length === 0) return -1;
@@ -790,7 +748,7 @@
                 gameTriangles[startId].type = 'START';
                 playerTriangleId = startId; 
                 startLocationId = startId;  
-                gameTriangles[playerTriangleId].type = 'PLAYER'; 
+                gameTriangles[playerTriangleId].occupant = 'PLAYER'; // Set occupant
             } else { console.error("Konnte Startpunkt nicht setzen!"); }
 
             const exitId = getRandomAvailableItemTriangle();
@@ -810,14 +768,14 @@
                 else console.warn("Konnte nicht alle Truhen setzen");
             }
             
-            const numEnemies = Math.floor(numTotalTriangles / 100); 
+            const numEnemies = Math.floor(numTotalTriangles / 200); 
             enemies = []; 
             for (let i = 0; i < numEnemies; i++) {
                 const enemyId = getRandomAvailableItemTriangle();
                 if (enemyId !== -1) {
-                    gameTriangles[enemyId].type = 'ENEMY';
+                    gameTriangles[enemyId].occupant = `ENEMY_${i}`; // Set occupant
                     const enemyObject = { 
-                        id: enemyId, 
+                        id: i, // Use loop index for unique enemy ID
                         currentTriangleId: enemyId, 
                         lastMoveTime: 0, 
                         currentFacingDirectionId: null, 
@@ -849,7 +807,6 @@
         }
 
 
-        // Aktualisiert die Farben der Dreiecke auf der Sphäre basierend auf ihrem Typ und Animationszustand
         function updateTriangleColors(currentHoverId = -1, applyHoverEffect = false) {
             if (!sphereMesh || !sphereMesh.geometry || !sphereMesh.geometry.getAttribute('color')) return; 
             
@@ -860,14 +817,17 @@
                 let baseColor;
 
                 if (tri.isWarpingOut) { 
-                    baseColor = tri.type === 'PLAYER' ? COLOR_WARP_OUT_PLAYER : COLOR_WARP_OUT_ENEMY;
+                    baseColor = tri.warpingEntityType === 'PLAYER' ? COLOR_WARP_OUT_PLAYER : COLOR_WARP_OUT_ENEMY;
                 } else if (tri.isWarpingIn) {
-                    baseColor = tri.type === 'PLAYER' ? COLOR_WARP_IN_PLAYER : COLOR_WARP_IN_ENEMY;
-                } else { 
+                    baseColor = tri.warpingEntityType === 'PLAYER' ? COLOR_WARP_IN_PLAYER : COLOR_WARP_IN_ENEMY;
+                } else if (tri.occupant === 'PLAYER') {
+                    baseColor = COLOR_PLAYER;
+                } else if (tri.occupant && tri.occupant.startsWith('ENEMY')) {
+                    baseColor = COLOR_ENEMY;
+                }
+                else { 
                     switch (tri.type) {
-                        case 'PLAYER': baseColor = COLOR_PLAYER; break;
                         case 'WALL': baseColor = COLOR_WALL; break;
-                        case 'ENEMY': baseColor = COLOR_ENEMY; break;
                         case 'KEY': baseColor = COLOR_KEY; break;
                         case 'CHEST': 
                             baseColor = tri.isUsedChest ? COLOR_CHEST_USED : COLOR_CHEST; 
@@ -881,7 +841,7 @@
                 let finalColor = baseColor.clone(); 
 
                 if (tri.isPathSegment && !tri.isWarpingIn && !tri.isWarpingOut) {
-                    if (tri.type !== 'PLAYER' && tri.type !== 'ENEMY' && tri.type !== 'WALL') { 
+                    if (!tri.occupant && tri.type !== 'WALL') { // Pfad nicht über Spieler/Gegner/Wand
                         const pathPulse = (Math.sin(time * 0.008 + tri.id * 0.5) + 1) / 2 * 0.4 + 0.6; 
                         finalColor = COLOR_PATH_HIGHLIGHT.clone().multiplyScalar(pathPulse); 
                     }
@@ -899,14 +859,12 @@
             colors.needsUpdate = true; 
         }
         
-        // Wird aufgerufen, wenn die Fenstergröße geändert wird
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight; 
             camera.updateProjectionMatrix(); 
             renderer.setSize(window.innerWidth, window.innerHeight); 
         }
 
-        // Wird bei Mausbewegungen aufgerufen
         async function onMouseMove(event) { 
             if (gameOver) return; 
             event.preventDefault(); 
@@ -938,7 +896,6 @@
             }
         }
 
-        // Wird bei Linksklick aufgerufen
         async function onLeftMouseClick(event) { 
             if (event.button !== 0) return; 
             
@@ -986,7 +943,6 @@
             }
         }
 
-        // Wird bei jedem Mausklick (egal welche Taste) aufgerufen
         async function onDocumentMouseDown(event) { 
             if (gameOver || !gameActive) return; 
             if (event.button === 1) { 
@@ -1000,7 +956,6 @@
             }
         }
 
-        // Wird bei Mausrad-Bewegung aufgerufen (Zoom)
         function onMouseWheel(event) {
             event.preventDefault(); 
             const zoomFactor = 1 - event.deltaY * ZOOM_SPEED; 
@@ -1012,7 +967,6 @@
             }
         }
         
-        // Behandelt den Verlust eines Spielerlebens
         async function handleLifeLost(collisionSourceTriangleId) {
             if (gameOver) return; 
 
@@ -1027,63 +981,61 @@
                 document.getElementById('gameOverScreen').style.display = 'flex'; 
                 
                 if (playerTriangleId !== -1 && gameTriangles[playerTriangleId]) { 
-                     gameTriangles[playerTriangleId].type = 'EMPTY'; 
+                     gameTriangles[playerTriangleId].occupant = null; // Spieler vom Feld nehmen (logisch)
                 }
                 playerTriangleId = -1; 
             }
         }
         
-        // Führt die visuelle Warp-Animation für eine Entität (Spieler oder Gegner) durch
-        async function moveEntityVisuals(entityId, oldTriangleId, newTriangleId, entityType) {
+        async function moveEntityVisuals(oldTriangleId, newTriangleId, entityType) {
             const oldTri = gameTriangles[oldTriangleId];
             const newTri = gameTriangles[newTriangleId];
 
             if (oldTri) {
                 oldTri.isWarpingOut = true;
+                oldTri.warpingEntityType = entityType; // Wer verlässt das Feld?
                 oldTri.warpTime = performance.now();
                 setTimeout(() => {
                     oldTri.isWarpingOut = false;
-                    if (oldTri.type !== 'CHEST' || (entityType === 'ENEMY' && oldTri.type === 'CHEST' && !oldTri.isUsedChest) ) {
-                         if (oldTri.id === startLocationId) oldTri.type = 'START';
-                         else if (oldTri.id === exitLocationId) oldTri.type = 'EXIT';
-                         else if (oldTri.type !== 'CHEST') oldTri.type = 'EMPTY'; 
-                    } else if (oldTri.type === 'CHEST' && oldTri.isUsedChest) {
-                         oldTri.type = 'CHEST';
-                    }
-
+                    oldTri.warpingEntityType = null;
                 }, WARP_ANIM_DURATION);
             }
 
             if (newTri) {
-                newTri.type = entityType; 
                 newTri.isWarpingIn = true;
+                newTri.warpingEntityType = entityType; // Wer betritt das Feld?
                 newTri.warpTime = performance.now();
                  setTimeout(() => {
                     newTri.isWarpingIn = false;
+                    newTri.warpingEntityType = null;
                 }, WARP_ANIM_DURATION);
             }
         }
 
 
-        // Bewegt den Spieler auf ein neues Zielfeld
         async function movePlayerTo(targetId) { 
-            if (gameOver || !gameActive || !gameTriangles[playerTriangleId] || !gameTriangles[targetId]) return false; 
+            if (gameOver || !gameActive || playerTriangleId === -1 || !gameTriangles[targetId]) return false; 
             if (Tone) await ensureAudioContextStarted(); 
             
             const potentialTargetTriangle = gameTriangles[targetId];
 
-            if (potentialTargetTriangle.type === 'ENEMY') {
+            if (potentialTargetTriangle.occupant && potentialTargetTriangle.occupant.startsWith('ENEMY')) {
                 await handleLifeLost(playerTriangleId); 
                 return false; 
             }
             
             const oldPlayerTriangleId = playerTriangleId; 
-            playerTriangleId = targetId; 
+            if (gameTriangles[oldPlayerTriangleId]) {
+                gameTriangles[oldPlayerTriangleId].occupant = null; // Altes Feld freigeben
+            }
             
-            await moveEntityVisuals(playerTriangleId, oldPlayerTriangleId, targetId, 'PLAYER');
+            playerTriangleId = targetId; 
+            gameTriangles[targetId].occupant = 'PLAYER'; // Neues Feld besetzen
+            
+            await moveEntityVisuals(oldPlayerTriangleId, targetId, 'PLAYER');
 
             const newPlayerTriangle = gameTriangles[playerTriangleId];
-            handlePlayerInteraction(newPlayerTriangle); 
+            handlePlayerInteraction(newPlayerTriangle); // Interaktion mit dem Typ des neuen Feldes
 
             if (newPlayerTriangle.center) { 
                 const targetDir = newPlayerTriangle.center.clone().normalize();
@@ -1095,14 +1047,13 @@
             return true; 
         }
 
-        // Behandelt Interaktionen des Spielers mit Objekten auf dem Feld
         function handlePlayerInteraction(triangle) {
             if (gameOver || !gameActive || !triangle) return; 
             switch (triangle.type) { 
                 case 'KEY': 
                     window.playerKeysHeld++; 
                     playSound(keyPickupSynth, ["C5", "E5", "A5"], "16n"); 
-                    triangle.type = 'EMPTY'; 
+                    triangle.type = 'EMPTY'; // Schlüssel wird zu einem leeren Feld, nachdem er aufgenommen wurde
                     updateInfoPanel();
                     break;
                 case 'CHEST': 
@@ -1130,7 +1081,6 @@
             }
         }
         
-        // Findet den kürzesten Pfad zwischen zwei Dreiecken mittels Breitensuche (BFS)
         function findShortestPath(startId, endId) {
             if (!gameTriangles[startId] || !gameTriangles[endId]) return []; 
             const queue = [[startId, [startId]]]; 
@@ -1146,7 +1096,8 @@
                 for (const neighborId of currentTriangle.neighbors) {
                     if (!visited.has(neighborId)) { 
                         const neighborTriangle = gameTriangles[neighborId];
-                        if (neighborTriangle && neighborTriangle.type !== 'WALL' && neighborTriangle.type !== 'ENEMY') { 
+                        // Pfadfindung meidet Wände und Felder, die von Gegnern besetzt sind
+                        if (neighborTriangle && neighborTriangle.type !== 'WALL' && (!neighborTriangle.occupant || !neighborTriangle.occupant.startsWith('ENEMY'))) { 
                             visited.add(neighborId); 
                             const newPath = [...path, neighborId]; 
                             queue.push([neighborId, newPath]); 
@@ -1157,7 +1108,6 @@
             return []; 
         }
 
-        // Markiert die Dreiecke eines Pfades für die visuelle Hervorhebung
         function highlightPath(path) {
             clearPathHighlight(); 
             path.forEach(triId => {
@@ -1167,7 +1117,6 @@
             });
         }
 
-        // Entfernt die visuelle Hervorhebung von Pfaden
         function clearPathHighlight() {
             let needsUpdate = false;
             gameTriangles.forEach(tri => {
@@ -1178,7 +1127,6 @@
             });
         }
 
-        // Startet die automatische Bewegung des Spielers entlang eines Pfades
         async function startAutoMove(path) { 
             if (gameOver || !gameActive || !path || path.length === 0) return;
             autoMovePath = [...path]; 
@@ -1190,7 +1138,6 @@
             nextAutoMoveTime = performance.now() + PATH_HIGHLIGHT_DURATION; 
         }
 
-        // Verarbeitet einen Schritt der automatischen Spielerbewegung
         async function processAutoMove() { 
             if (gameOver || !gameActive || !isAutoMoving || autoMovePath.length === 0) {
                 if (isAutoMoving) { 
@@ -1227,7 +1174,6 @@
             }
         }
         
-        // Wählt eine neue (meist zufällige) gültige Bewegungsrichtung für einen Gegner
         function chooseNewEnemyFacingDirection(enemy, isInitial = false, collidedWithWall = false) {
             const currentTri = gameTriangles[enemy.currentTriangleId];
             if (!currentTri || !currentTri.neighbors || currentTri.neighbors.length === 0) {
@@ -1237,7 +1183,8 @@
 
             let possibleMoves = currentTri.neighbors.filter(nId => {
                 const neighborTri = gameTriangles[nId];
-                return neighborTri && neighborTri.type !== 'WALL' && nId !== enemy.currentTriangleId;
+                return neighborTri && neighborTri.type !== 'WALL' && nId !== enemy.currentTriangleId && // Nicht das aktuelle Feld
+                       (!neighborTri.occupant || neighborTri.occupant === 'PLAYER'); // Nicht von anderem Gegner besetzt (Spieler ist ok für Kollision)
             });
 
             if ((collidedWithWall || !isInitial) && enemy.previousMoveFromId !== null && possibleMoves.length > 1) {
@@ -1246,19 +1193,16 @@
             
             if (possibleMoves.length > 0) {
                 enemy.currentFacingDirectionId = possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
-            } else if (currentTri.neighbors.length > 0) { 
+            } else { // Fallback, wenn alle "guten" Züge blockiert sind
                  const fallbackMoves = currentTri.neighbors.filter(nId => gameTriangles[nId] && gameTriangles[nId].type !== 'WALL' && nId !== enemy.currentTriangleId);
                  if (fallbackMoves.length > 0) {
                     enemy.currentFacingDirectionId = fallbackMoves[Math.floor(Math.random() * fallbackMoves.length)];
                  } else {
                     enemy.currentFacingDirectionId = null; 
                  }
-            } else {
-                enemy.currentFacingDirectionId = null; 
             }
         }
 
-        // Aktualisiert Position und Ausrichtung des Richtungspfeils eines Gegners
         function updateEnemyArrow(enemy) {
             if (!enemy.directionArrow || enemy.currentFacingDirectionId === null || 
                 !gameTriangles[enemy.currentTriangleId] || !gameTriangles[enemy.currentFacingDirectionId]) {
@@ -1269,13 +1213,16 @@
             const currentEnemyTri = gameTriangles[enemy.currentTriangleId];
             const nextTargetTri = gameTriangles[enemy.currentFacingDirectionId]; 
 
-            const arrowPosition = nextTargetTri.center.clone().add(nextTargetTri.normal.clone().multiplyScalar(0.03)); 
+            const arrowPosition = nextTargetTri.center.clone().add(nextTargetTri.normal.clone().multiplyScalar(0.03)); // Leicht über der Oberfläche des ZIEL-Dreiecks
             enemy.directionArrow.position.copy(arrowPosition);
             
-            const yAxis = new THREE.Vector3().subVectors(nextTargetTri.center, currentEnemyTri.center).normalize(); 
-            const zAxis = nextTargetTri.normal.clone(); 
+            const directionToNext = new THREE.Vector3().subVectors(nextTargetTri.center, currentEnemyTri.center).normalize(); 
+            
+            const yAxis = directionToNext; // Pfeilspitze in Bewegungsrichtung
+            const zAxis = nextTargetTri.normal.clone(); // Pfeil flach auf Oberfläche des ZIEL-Dreiecks
             const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis).normalize();
             
+            // Sicherstellen, dass yAxis senkrecht zu zAxis steht, falls sie es nicht schon sind
             const correctedYAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
 
             const matrix = new THREE.Matrix4();
@@ -1286,7 +1233,6 @@
         }
 
 
-        // Bewegt die Gegner auf der Sphäre
         async function moveEnemies() { 
             if (gameOver || !gameActive ) return; 
             const currentTime = performance.now();
@@ -1297,31 +1243,50 @@
                 const oldEnemyTriangleId = enemy.currentTriangleId; 
                 const currentEnemyTriangle = gameTriangles[oldEnemyTriangleId];
                 
-                let intendedNextMoveId = enemy.currentFacingDirectionId;
+                let targetThisTurnId = enemy.currentFacingDirectionId;
 
-                if (intendedNextMoveId === null || !gameTriangles[intendedNextMoveId] || gameTriangles[intendedNextMoveId].type === 'WALL') {
+                // 1. Wenn keine Richtung oder Ziel ist Wand -> neue Richtung wählen
+                if (targetThisTurnId === null || !gameTriangles[targetThisTurnId] || gameTriangles[targetThisTurnId].type === 'WALL') {
                     enemy.previousMoveFromId = oldEnemyTriangleId; 
-                    chooseNewEnemyFacingDirection(enemy, false, true); 
-                    intendedNextMoveId = enemy.currentFacingDirectionId; 
+                    chooseNewEnemyFacingDirection(enemy, false, true); // true für Wandkollision
+                    targetThisTurnId = enemy.currentFacingDirectionId; 
                     
-                    if (intendedNextMoveId === null || !gameTriangles[intendedNextMoveId] || gameTriangles[intendedNextMoveId].type === 'WALL') {
+                    if (targetThisTurnId === null || !gameTriangles[targetThisTurnId] || gameTriangles[targetThisTurnId].type === 'WALL') {
                         enemy.lastMoveTime = currentTime; 
                         updateEnemyArrow(enemy); 
                         continue; 
                     }
                 }
 
-                const intendedNextTriangle = gameTriangles[intendedNextMoveId];
+                const targetTriangleForThisTurn = gameTriangles[targetThisTurnId];
 
-                if (intendedNextTriangle.id === playerTriangleId) { 
+                // 2. Prüfen, ob das Ziel von einem anderen Gegner besetzt ist
+                if (targetTriangleForThisTurn.occupant && targetTriangleForThisTurn.occupant.startsWith('ENEMY')) {
+                    enemy.previousMoveFromId = oldEnemyTriangleId; 
+                    chooseNewEnemyFacingDirection(enemy, false, false); // Wähle eine neue zufällige Richtung
+                    updateEnemyArrow(enemy); 
+                    enemy.lastMoveTime = currentTime;
+                    continue; 
+                }
+                
+                // 3. Bewege den Gegner zum Ziel (kann auch Spielerfeld sein)
+                if (gameTriangles[oldEnemyTriangleId]) {
+                    gameTriangles[oldEnemyTriangleId].occupant = null;
+                }
+                enemy.currentTriangleId = targetThisTurnId; 
+                gameTriangles[targetThisTurnId].occupant = `ENEMY_${enemy.id}`;
+                await moveEntityVisuals(oldEnemyTriangleId, targetThisTurnId, 'ENEMY'); 
+
+                // 4. Kollision mit Spieler nach der Bewegung
+                if (enemy.currentTriangleId === playerTriangleId && playerTriangleId !== -1) { 
                     await handleLifeLost(playerTriangleId); 
 
                     if (!gameOver) { 
-                        if(gameTriangles[playerTriangleId] && playerTriangleId !== -1) gameTriangles[playerTriangleId].type = 'EMPTY'; 
+                        if(gameTriangles[playerTriangleId] && playerTriangleId !== -1) gameTriangles[playerTriangleId].occupant = null; // Spieler vom Kollisionsfeld nehmen
                         
                         playerTriangleId = startLocationId; 
                         if(gameTriangles[playerTriangleId]) {
-                            gameTriangles[playerTriangleId].type = 'PLAYER'; 
+                            gameTriangles[playerTriangleId].occupant = 'PLAYER'; 
                             const playerStartTri = gameTriangles[playerTriangleId];
                             if (playerStartTri && playerStartTri.center) {
                                 const targetDir = playerStartTri.center.clone().normalize();
@@ -1329,29 +1294,9 @@
                             }
                         }
                     }
-                    // Gegner bewegt sich auf das (ggf. jetzt leere) Feld des Spielers
-                     enemy.currentTriangleId = intendedNextMoveId;
-                     await moveEntityVisuals(enemy.id, oldEnemyTriangleId, intendedNextMoveId, 'ENEMY');
-                    
-                    enemy.previousMoveFromId = oldEnemyTriangleId; 
-                    chooseNewEnemyFacingDirection(enemy, false, false); 
-                    updateEnemyArrow(enemy);
-                    enemy.lastMoveTime = currentTime;
-                    continue; 
-                }
-
-                if (intendedNextTriangle.type === 'ENEMY') {
-                    enemy.previousMoveFromId = oldEnemyTriangleId; 
-                    chooseNewEnemyFacingDirection(enemy, false, false); 
-                    updateEnemyArrow(enemy); 
-                    enemy.lastMoveTime = currentTime;
-                    continue; 
                 }
                 
-                enemy.previousMoveFromId = oldEnemyTriangleId; 
-                enemy.currentTriangleId = intendedNextMoveId; 
-                await moveEntityVisuals(enemy.id, oldEnemyTriangleId, intendedNextMoveId, 'ENEMY'); 
-
+                // 5. Bestimme die Ausrichtung für den NÄCHSTEN Zug (versuche geradeaus)
                 const newCurrentTri = gameTriangles[enemy.currentTriangleId]; 
                 const prevTriForDirection = gameTriangles[oldEnemyTriangleId]; 
 
