@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zone X - Fehlerkorrektur</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #050510; 
+            color: #E0E0E0; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+        }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            padding: 12px 18px;
+            background-color: rgba(10, 20, 40, 0.75); 
+            border: 1px solid rgba(0, 180, 255, 0.6); 
+            border-radius: 8px; 
+            color: #00E5FF; 
+            opacity: 0.9; 
+            font-size: 0.7em; 
+            text-shadow: 0 0 5px rgba(0, 200, 255, 0.7); 
+            box-shadow: 0 0 15px rgba(0, 150, 255, 0.3); 
+            z-index: 10;
+            line-height: 1.4;
+        }
+        #info br {
+            content: "";
+            margin: 3px 0;
+            display: block;
+        }
+        .info-line { 
+            margin-bottom: 4px;
+        }
+        .overlay-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(5, 5, 20, 0.92); 
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            z-index: 2000; 
+            cursor: pointer; 
+        }
+        #startScreenText {
+            font-size: 7em; 
+            color: #00FF99; 
+            font-weight: bold;
+            letter-spacing: 2px;
+            text-shadow: 0 0 8px #00FF99, 0 0 15px #00DD88, 0 0 25px #00AA66, 0 0 40px #007744;
+            animation: pulseStartStylish 1.2s infinite alternate;
+            opacity: 0; 
+            transition: opacity 0.5s ease-in-out; 
+        }
+        #gameOverScreen {
+             display: none; 
+        }
+        #gameOverText {
+            font-size: 6em; 
+            color: #FF2222; 
+            font-weight: bold;
+            letter-spacing: 1px;
+            text-shadow: 0 0 8px #FF2222, 0 0 15px #DD0000, 0 0 25px #AA0000, 0 0 40px #770000; 
+            animation: pulseGameOverStylish 1.5s infinite alternate;
+        }
+
+        @keyframes pulseGameOverStylish {
+            from { transform: scale(1); opacity: 0.85; filter: brightness(0.9); }
+            to { transform: scale(1.03); opacity: 1; filter: brightness(1.1); }
+        }
+        @keyframes pulseStartStylish {
+            from { transform: scale(1); opacity: 0.75; filter: brightness(0.9); }
+            to { transform: scale(1.02); opacity: 1; filter: brightness(1.1); }
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <div class="info-line">ZONE X</div>
+        <div class="info-line">Steuerung: Maus & Klick. Mausrad: Zoom.</div>
+        <div class="info-line">Ziel: Schlüssel zu Truhen, dann Exit.</div>
+        <div class="info-line" id="livesInfo">Leben: 3 / 3</div>
+        <div class="info-line" id="keysInfo">Schlüssel: 0 | Ziel: 0</div>
+        <div class="info-line" id="chestsInfo">Abgelegt: 0 / 0</div>
+    </div>
+    
+    <div id="startScreen" class="overlay-screen">
+        <div id="startScreenText">ZONE X</div>
+    </div>
+    <div id="gameOverScreen" class="overlay-screen">
+        <div id="gameOverText">GAME OVER</div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js",
+                "tone": "https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        
+        let Tone; 
+        try {
+            const importedModule = await import('tone');
+            if (importedModule.default && typeof importedModule.default.Synth === 'function') {
+                Tone = importedModule.default;
+            } else if (importedModule.Tone && typeof importedModule.Tone.Synth === 'function') { 
+                Tone = importedModule.Tone;
+            } else if (importedModule && typeof importedModule.Synth === 'function') {
+                Tone = importedModule;
+            } else if (window.Tone && typeof window.Tone.Synth === 'function') {
+                Tone = window.Tone;
+            } else {
+                Tone = null;
+            }
+        } catch (e) {
+            console.warn("Tone.js could NOT be loaded via import. Sounds will be disabled.", e);
+            Tone = null;
+        }
+
+        // Globale Spielvariablen
+        let scene, camera, renderer, sphereMesh, raycaster, mouse, ambientLight, sphereGroup, starField;
+        let gameTriangles = []; 
+        let playerTriangleId = -1;
+        let hoveredTriangleId = -1;
+        let targetSphereQuaternion = new THREE.Quaternion();
+        const sphereRadius = 10;
+        const subdivisions = 4; 
+
+        const PLAYER_MOVE_COOLDOWN = 0; 
+        const ENEMY_MOVE_COOLDOWN = 500; 
+        let lastPlayerMoveTime = 0;
+        let enemies = [];
+
+        // Spielstatus
+        let playerLives = 3; 
+        const MAX_PLAYER_LIVES = 3;
+        let numKeys = 0; 
+        let numChests = 0; 
+        let playerKeysHeld = 0; 
+        let keysDelivered = 0; 
+        let startLocationId = -1; 
+        let exitLocationId = -1;  
+        let gameOver = false; 
+        let gameActive = false; 
+        let startScreenTimeout; 
+        let startScreenActive = true; 
+
+        // Farben - Futuristisch
+        const COLOR_DEFAULT = new THREE.Color(0x1A1A2E); 
+        const COLOR_PLAYER = new THREE.Color(0x00FFAA);   
+        const COLOR_WALL = new THREE.Color(0x4B527E);     
+        const COLOR_ENEMY = new THREE.Color(0xFF4136);    
+        const COLOR_KEY = new THREE.Color(0xFFDC00);      
+        const COLOR_CHEST = new THREE.Color(0xA040A0);    
+        const COLOR_CHEST_USED = new THREE.Color(0x7A297A); 
+        const COLOR_START = new THREE.Color(0x7FDBFF);    
+        const COLOR_EXIT = new THREE.Color(0xF012BE);     
+        const COLOR_PATH_HIGHLIGHT = new THREE.Color(0x00BFFF); 
+        const COLOR_HOVER_HIGHLIGHT = new THREE.Color(0x00FFFF); 
+        const COLOR_BACKGROUND_FLASH = new THREE.Color(0xAA4444); 
+        const ORIGINAL_BACKGROUND_COLOR = new THREE.Color(0x050510); 
+        const COLOR_WARP_OUT_PLAYER = new THREE.Color(0x00FFFF); 
+        const COLOR_WARP_IN_PLAYER = new THREE.Color(0xAAFFEE); 
+        const COLOR_WARP_OUT_ENEMY = new THREE.Color(0xAA0000); 
+        const COLOR_WARP_IN_ENEMY = new THREE.Color(0xFF8888); 
+        
+        // Pathfinding & Auto-Move Variablen
+        let isAutoMoving = false;
+        let autoMovePath = [];
+        let nextAutoMoveTime = 0;
+        const PATH_HIGHLIGHT_DURATION = 20; 
+
+        // Soundeffekte
+        let audioContextStarted = false;
+        let hoverSynth, moveSynth, keyPickupSynth, chestDeliverySynth, winSynth, loseSynth, pathStartSynth, wallHitSynth, pathCancelSynth, errorSynth, lifeLostSynth, startScreenSynth;
+
+        // Zoom Variablen
+        const MIN_ZOOM_DISTANCE = sphereRadius * 1.1; 
+        const MAX_ZOOM_DISTANCE = sphereRadius * 5;   
+        const ZOOM_SPEED = 0.0005; 
+
+        // Animationen
+        const WARP_ANIM_DURATION = 60; 
+
+
+        // Initialisierung
+        async function init() {
+            scene = new THREE.Scene();
+            scene.background = ORIGINAL_BACKGROUND_COLOR.clone(); 
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 0, sphereRadius * 1.8); 
+            camera.lookAt(scene.position);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            ambientLight = new THREE.AmbientLight(0xAAAAFF, 0.6); 
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xFFFFFF, 0.8); 
+            directionalLight.position.set(8, 12, 10); 
+            directionalLight.castShadow = true; 
+            scene.add(directionalLight);
+
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            sphereGroup = new THREE.Group();
+            scene.add(sphereGroup);
+
+            if (Tone) { 
+                initializeSounds(); 
+            } else {
+                console.warn("Sound-Initialisierung übersprungen.");
+            }
+
+            generateSphere(); 
+            createStarfield();  
+            generateLevel();
+            updateTriangleColors(); 
+
+            renderer.render(scene, camera); 
+
+            window.addEventListener('resize', onWindowResize, false);
+            document.addEventListener('mousemove', onMouseMove, false);
+            document.addEventListener('click', onLeftMouseClick, false); 
+            document.addEventListener('mousedown', onDocumentMouseDown, false);
+            document.addEventListener('wheel', onMouseWheel, { passive: false });
+            
+            updateInfoPanel();
+            
+            const startScreenElement = document.getElementById('startScreen');
+            const startScreenTextElement = document.getElementById('startScreenText');
+            
+            startScreenElement.style.display = 'flex'; 
+            startScreenTextElement.style.opacity = '1'; 
+
+            startScreenElement.addEventListener('click', startGame, { once: true }); 
+            startScreenTimeout = setTimeout(startGame, 10000000000); 
+
+            animate(); 
+        }
+
+        async function startGame() {
+            if (!startScreenActive) return; 
+            startScreenActive = false;
+
+            clearTimeout(startScreenTimeout); 
+            
+            const startScreenElement = document.getElementById('startScreen');
+            startScreenElement.style.display = 'none';
+            
+            if (Tone) await ensureAudioContextStarted(); 
+            playSound(startScreenSynth, ["C4", "G4", "C5", "E5"], "1n"); 
+            
+            gameActive = true; 
+
+            if (playerTriangleId !== -1 && gameTriangles[playerTriangleId]) { 
+                const playerTriangle = gameTriangles[playerTriangleId];
+                if (playerTriangle.center) { 
+                    const targetDir = playerTriangle.center.clone().normalize();
+                    targetSphereQuaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), targetDir).invert();
+                    if (sphereGroup) sphereGroup.quaternion.copy(targetSphereQuaternion);
+                }
+            }
+        }
+
+
+        async function ensureAudioContextStarted() {
+            if (!Tone || !Tone.context) return; 
+            if (!audioContextStarted && Tone.context.state !== 'running') {
+                try {
+                    await Tone.start();
+                    audioContextStarted = true;
+                } catch (e) {
+                    console.error("Error starting AudioContext:", e);
+                }
+            }
+        }
+
+        function initializeSounds() {
+            const shortImpact = { attack: 0.001, decay: 0.08, sustain: 0, release: 0.05 };
+
+            hoverSynth = new Tone.Synth({ oscillator: { type: 'sine' }, envelope: { attack: 0.002, decay: 0.03, sustain: 0, release: 0.03 }, volume: -28 }).toDestination();
+            moveSynth = new Tone.Synth({ oscillator: { type: 'triangle4' }, envelope: { attack: 0.005, decay: 0.05, sustain: 0, release: 0.08 }, volume: -20 }).toDestination();
+            
+            keyPickupSynth = new Tone.PolySynth(Tone.Synth, {
+                polyphony: 3,
+                oscillator: { type: 'triangle', detune: 0 },
+                envelope: { attack: 0.005, decay: 0.1, sustain: 0.05, release: 0.1 },
+                volume: -12
+            }).toDestination();
+            
+            const chestMechanismSound = new Tone.MetalSynth({ 
+                frequency: 150,
+                envelope: { attack: 0.001, decay: 0.1, release: 0.01 },
+                harmonicity: 3.1, modulationIndex: 16, octaves: 0.5, volume: -18
+            }).toDestination();
+            const keysDepositedSound = new Tone.FMSynth({ 
+                harmonicity: 3.01,
+                modulationIndex: 10,
+                detune: 0,
+                oscillator: { type: "sine" },
+                envelope: { attack: 0.01, decay: 0.3, sustain: 0.01, release: 0.2 },
+                modulation: { type: "square" },
+                modulationEnvelope: { attack: 0.02, decay: 0.2, sustain: 0, release: 0.1 },
+                volume: -8
+            }).toDestination();
+             chestDeliverySynth = { 
+                trigger: (time) => {
+                    chestMechanismSound.triggerAttackRelease("32n", time);
+                    keysDepositedSound.triggerAttackRelease("C5", "4n", time + 0.05); 
+                }
+            };
+
+            winSynth = new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: 'fatsine', count:3, spread: 30 }, 
+                envelope: { attack: 0.1, decay: 0.8, sustain: 0.2, release: 0.5 }, volume: -8 
+            }).toDestination();
+            
+            loseSynth = new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: "fatsquare", count: 4, spread: 40, detune: -200 },
+                envelope: { attack: 0.02, decay: 2.0, sustain: 0, release: 0.8 }, 
+                volume: -6
+            }).toDestination();
+
+            pathStartSynth = new Tone.Synth({ oscillator: { type: 'sine', detune: 50 }, envelope: shortImpact, volume: -22 }).toDestination();
+            wallHitSynth = new Tone.Synth({ oscillator: { type: 'square', detune: -1500 }, envelope: { attack:0.001, decay:0.06, sustain:0, release:0.04 }, volume: -16 }).toDestination();
+            pathCancelSynth = new Tone.Synth({ oscillator: { type: 'triangle', detune: -50 }, envelope: shortImpact, volume: -18 }).toDestination();
+            errorSynth = new Tone.NoiseSynth({
+                noise: { type: 'brown' }, 
+                envelope: { attack: 0.005, decay: 0.08, sustain: 0, release: 0.08 },
+                volume: -22 
+            }).toDestination();
+            lifeLostSynth = new Tone.Synth({
+                oscillator: { type: 'fatsquare', detune: -800, count: 4, spread: 50 }, 
+                envelope: { attack: 0.01, decay: 0.5, sustain: 0.05, release: 0.4 }, 
+                volume: -7
+            }).toDestination();
+            startScreenSynth = new Tone.PolySynth(Tone.Synth, { 
+                oscillator: { type: "fatsine", count: 4, spread: 25 },
+                envelope: { attack: 0.1, decay: 0.5, sustain: 0.2, release: 0.3 },
+                volume: -8
+            }).toDestination();
+        }
+
+        function playSound(synth, noteOrTimeToTrigger, duration = "8n", time) {
+            if (!Tone || !synth || !audioContextStarted) return; 
+            
+            const playTime = time || Tone.now(); 
+            try {
+                if (synth === chestDeliverySynth) { 
+                    synth.trigger(playTime);
+                } else if (synth instanceof Tone.NoiseSynth) { 
+                     synth.triggerAttackRelease(duration, playTime);
+                } else if (synth instanceof Tone.PluckSynth) { 
+                     synth.triggerAttack(noteOrTimeToTrigger, playTime);
+                }
+                else if (synth instanceof Tone.PolySynth || synth instanceof Tone.Synth) { 
+                     synth.triggerAttackRelease(noteOrTimeToTrigger, duration, playTime);
+                }
+            } catch (e) { /* console.warn(`Sound playback failed:`, e); */ }
+        }
+        
+        function showMessage(text) { 
+            console.log("Game Message (Dialog suppressed):", text); 
+            if (text.toLowerCase().includes("kann nicht") || text.toLowerCase().includes("kein pfad") || text.toLowerCase().includes("brauchst einen schlüssel") || text.toLowerCase().includes("bereits benutzt")) {
+                playSound(errorSynth, null, "16n"); 
+            }
+        }
+
+        function triggerBackgroundFlash() {
+            if (scene) {
+                scene.background = COLOR_BACKGROUND_FLASH.clone();
+                setTimeout(() => {
+                    if (scene) scene.background = ORIGINAL_BACKGROUND_COLOR.clone();
+                }, 120); 
+            }
+        }
+
+        function createStarfield() {
+            const starQty = 35000; 
+            const starVertices = [];
+            const starColors = []; 
+            const starSizes = [];  
+
+            const starMaterial = new THREE.PointsMaterial({
+                size: 0.3, 
+                sizeAttenuation: true, 
+                color: 0xffffff, 
+                vertexColors: true, 
+                transparent: true,
+                opacity: 0.8, 
+                blending: THREE.AdditiveBlending, 
+                depthWrite: false 
+            });
+
+            const starGeometry = new THREE.BufferGeometry();
+
+            for (let i = 0; i < starQty; i++) {
+                const x = THREE.MathUtils.randFloatSpread(sphereRadius * 30); 
+                const y = THREE.MathUtils.randFloatSpread(sphereRadius * 30);
+                const z = THREE.MathUtils.randFloatSpread(sphereRadius * 30);
+                
+                const distSq = x*x + y*y + z*z;
+                if (distSq < (sphereRadius * 2.5) * (sphereRadius * 2.5)) { 
+                    const r = sphereRadius * 2.5 + Math.random() * sphereRadius * 20;
+                    const phi = Math.random() * Math.PI * 2;
+                    const theta = Math.random() * Math.PI;
+                    starVertices.push(
+                        r * Math.sin(theta) * Math.cos(phi),
+                        r * Math.sin(theta) * Math.sin(phi),
+                        r * Math.cos(theta)
+                    );
+                } else {
+                    starVertices.push(x, y, z);
+                }
+
+                const distanceFromCenter = Math.sqrt(x*x + y*y + z*z);
+                const baseBrightness = 0.6 + Math.random() * 0.4; 
+                const brightness = Math.max(0.2, baseBrightness * (1 - Math.min(1, distanceFromCenter / (sphereRadius * 25))));
+                
+                const starColor = new THREE.Color();
+                if (Math.random() < 0.3) {
+                    starColor.setHSL(0.6, 0.8, brightness * 0.8); 
+                } else if (Math.random() < 0.6) {
+                    starColor.setHSL(0.15, 0.9, brightness); 
+                } else {
+                    starColor.setHSL(0, 0, brightness); 
+                }
+                starColors.push(starColor.r, starColor.g, starColor.b);
+                starSizes.push(Math.random() * 1.5 + 0.5); 
+            }
+
+            starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+            starGeometry.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
+
+            starField = new THREE.Points(starGeometry, starMaterial);
+            sphereGroup.add(starField); 
+        }
+
+
+        function generateSphere() {
+            let vertices = [];
+            let faces = []; 
+
+            const t = (1.0 + Math.sqrt(5.0)) / 2.0;
+            const icosahedronVerticesData = [
+                [-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0],
+                [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+                [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]
+            ];
+            icosahedronVerticesData.forEach(v => vertices.push(new THREE.Vector3(v[0], v[1], v[2]).normalize().multiplyScalar(sphereRadius)));
+
+            const icosahedronFacesData = [
+                [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+                [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+                [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+                [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
+            ];
+            faces = icosahedronFacesData;
+
+            const midpointCache = new Map();
+            function getMidpoint(p1Idx, p2Idx) {
+                const sortedKey = `${Math.min(p1Idx, p2Idx)}_${Math.max(p1Idx, p2Idx)}`;
+                if (midpointCache.has(sortedKey)) {
+                    return midpointCache.get(sortedKey);
+                }
+                const v1 = vertices[p1Idx];
+                const v2 = vertices[p2Idx];
+                const mid = new THREE.Vector3().addVectors(v1, v2).normalize().multiplyScalar(sphereRadius);
+                vertices.push(mid);
+                const newIdx = vertices.length - 1;
+                midpointCache.set(sortedKey, newIdx);
+                return newIdx;
+            }
+
+            for (let i = 0; i < subdivisions; i++) {
+                const newFaces = [];
+                midpointCache.clear();
+                for (const face of faces) {
+                    const v1 = face[0], v2 = face[1], v3 = face[2];
+                    const m12 = getMidpoint(v1, v2);
+                    const m23 = getMidpoint(v2, v3);
+                    const m31 = getMidpoint(v3, v1);
+                    newFaces.push([v1, m12, m31]);
+                    newFaces.push([v2, m23, m12]);
+                    newFaces.push([v3, m31, m23]);
+                    newFaces.push([m12, m23, m31]);
+                }
+                faces = newFaces;
+            }
+            
+            const geometry = new THREE.BufferGeometry();
+            const finalVertices = [], finalNormals = [], finalColors = [];
+
+            faces.forEach((faceIndices, faceIdx) => {
+                const vA = vertices[faceIndices[0]], vB = vertices[faceIndices[1]], vC = vertices[faceIndices[2]];
+                finalVertices.push(vA.x, vA.y, vA.z, vB.x, vB.y, vB.z, vC.x, vC.y, vC.z);
+                const normal = new THREE.Triangle(vA, vB, vC).getNormal(new THREE.Vector3());
+                for(let i=0; i<3; i++) finalNormals.push(normal.x, normal.y, normal.z);
+                for(let i=0; i<3; i++) finalColors.push(COLOR_DEFAULT.r, COLOR_DEFAULT.g, COLOR_DEFAULT.b);
+                
+                const center = new THREE.Vector3().add(vA).add(vB).add(vC).divideScalar(3);
+                gameTriangles.push({
+                    id: faceIdx, vertexIndices: faceIndices, vertices: [vA, vB, vC],
+                    center: center, normal: normal, type: 'EMPTY',
+                    originalColor: COLOR_DEFAULT.clone(), neighbors: [], isPathSegment: false,
+                    isWarpingOut: false, isWarpingIn: false, warpTime: 0,
+                    isUsedChest: false 
+                });
+            });
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(finalVertices, 3));
+            geometry.setAttribute('normal', new THREE.Float32BufferAttribute(finalNormals, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(finalColors, 3));
+            geometry.computeVertexNormals();
+
+            calculateAdjacencies();
+            
+            const material = new THREE.MeshPhongMaterial({ 
+                vertexColors: true, 
+                shininess: 40,
+                transparent: true, 
+                opacity: 0.92 
+            }); 
+            sphereMesh = new THREE.Mesh(geometry, material);
+            sphereGroup.add(sphereMesh); 
+        }
+
+        function calculateAdjacencies() {
+            const edgeMap = new Map();
+            gameTriangles.forEach(tri => {
+                const vIdx = tri.vertexIndices;
+                const edges = [[vIdx[0], vIdx[1]], [vIdx[1], vIdx[2]], [vIdx[2], vIdx[0]]];
+                edges.forEach(edge => {
+                    const key = `${Math.min(edge[0], edge[1])}_${Math.max(edge[0], edge[1])}`;
+                    if (!edgeMap.has(key)) edgeMap.set(key, []);
+                    edgeMap.get(key).push(tri.id);
+                });
+            });
+            gameTriangles.forEach(tri => {
+                const vIdx = tri.vertexIndices;
+                const edges = [[vIdx[0], vIdx[1]], [vIdx[1], vIdx[2]], [vIdx[2], vIdx[0]]];
+                const triNeighbors = new Set();
+                edges.forEach(edge => {
+                    const key = `${Math.min(edge[0], edge[1])}_${Math.max(edge[0], edge[1])}`;
+                    if (edgeMap.has(key)) {
+                        edgeMap.get(key).forEach(neighborId => {
+                            if (neighborId !== tri.id) triNeighbors.add(neighborId);
+                        });
+                    }
+                });
+                tri.neighbors = Array.from(triNeighbors);
+            });
+        }
+
+        function generateLevel() {
+            const numTotalTriangles = gameTriangles.length;
+            if (numTotalTriangles === 0) return;
+
+            const numWalls = Math.floor(numTotalTriangles * 0.10);
+            numKeys = Math.floor(numTotalTriangles / 100); 
+            numChests = numKeys; 
+
+            let availableTriangles = gameTriangles.map(t => t.id);
+            function getRandomAvailableTriangle() {
+                if (availableTriangles.length === 0) return -1;
+                const randIdx = Math.floor(Math.random() * availableTriangles.length);
+                const triId = availableTriangles[randIdx];
+                availableTriangles.splice(randIdx, 1);
+                return triId;
+            }
+
+            for (let i = 0; i < numWalls; i++) {
+                const wallId = getRandomAvailableTriangle();
+                if (wallId !== -1) gameTriangles[wallId].type = 'WALL';
+            }
+
+            const startId = getRandomAvailableTriangle();
+            if (startId !== -1) {
+                gameTriangles[startId].type = 'START';
+                playerTriangleId = startId;
+                startLocationId = startId; 
+                gameTriangles[playerTriangleId].type = 'PLAYER'; 
+            }
+
+            const exitId = getRandomAvailableTriangle();
+            if (exitId !== -1) {
+                gameTriangles[exitId].type = 'EXIT';
+                exitLocationId = exitId; 
+            }
+
+            for (let i = 0; i < numKeys; i++) {
+                const keyId = getRandomAvailableTriangle();
+                if (keyId !== -1) gameTriangles[keyId].type = 'KEY';
+            }
+            for (let i = 0; i < numChests; i++) {
+                const chestId = getRandomAvailableTriangle();
+                if (chestId !== -1) gameTriangles[chestId].type = 'CHEST';
+            }
+            
+            const numEnemies = Math.floor(numTotalTriangles / 100);
+            enemies = [];
+            for (let i = 0; i < numEnemies; i++) {
+                const enemyId = getRandomAvailableTriangle();
+                if (enemyId !== -1) {
+                    gameTriangles[enemyId].type = 'ENEMY';
+                    enemies.push({ id: enemyId, lastMoveTime: 0, currentTriangleId: enemyId });
+                }
+            }
+            updateInfoPanel();
+        }
+
+        function updateTriangleColors(currentHoverId = -1, applyHoverEffect = false) {
+            if (!sphereMesh || !sphereMesh.geometry || !sphereMesh.geometry.getAttribute('color')) return; 
+            
+            const colors = sphereMesh.geometry.getAttribute('color');
+            const time = performance.now();
+
+            gameTriangles.forEach(tri => {
+                let baseColor;
+
+                if (tri.isWarpingOut) { 
+                    baseColor = tri.type === 'PLAYER' ? COLOR_WARP_OUT_PLAYER : COLOR_WARP_OUT_ENEMY;
+                } else if (tri.isWarpingIn) {
+                    baseColor = tri.type === 'PLAYER' ? COLOR_WARP_IN_PLAYER : COLOR_WARP_IN_ENEMY;
+                } else { 
+                    switch (tri.type) {
+                        case 'PLAYER': baseColor = COLOR_PLAYER; break;
+                        case 'WALL': baseColor = COLOR_WALL; break;
+                        case 'ENEMY': baseColor = COLOR_ENEMY; break;
+                        case 'KEY': baseColor = COLOR_KEY; break;
+                        case 'CHEST': 
+                            baseColor = tri.isUsedChest ? COLOR_CHEST_USED : COLOR_CHEST; 
+                            break;
+                        case 'START': baseColor = COLOR_START; break;
+                        case 'EXIT': baseColor = COLOR_EXIT; break;
+                        case 'EMPTY': default: baseColor = tri.originalColor; break;
+                    }
+                }
+
+                let finalColor = baseColor.clone();
+
+                if (tri.isPathSegment && !tri.isWarpingIn && !tri.isWarpingOut) {
+                    if (tri.type !== 'PLAYER' && tri.type !== 'ENEMY' && tri.type !== 'WALL') { 
+                        const pathPulse = (Math.sin(time * 0.008 + tri.id * 0.5) + 1) / 2 * 0.4 + 0.6; 
+                        finalColor = COLOR_PATH_HIGHLIGHT.clone().multiplyScalar(pathPulse);
+                    }
+                }
+
+                if (applyHoverEffect && tri.id === currentHoverId && tri.type !== 'WALL' && !tri.isWarpingIn && !tri.isWarpingOut) {
+                    const hoverPulse = (Math.sin(time * 0.01) + 1) / 2 * 0.3 + 0.8; 
+                    finalColor = COLOR_HOVER_HIGHLIGHT.clone().multiplyScalar(hoverPulse);
+                }
+                
+                for (let i = 0; i < 3; i++) {
+                    colors.setXYZ(tri.id * 3 + i, finalColor.r, finalColor.g, finalColor.b);
+                }
+            });
+            colors.needsUpdate = true;
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        async function onMouseMove(event) { 
+            if (gameOver) return; 
+            event.preventDefault();
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            if (!sphereMesh) return; 
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(sphereMesh); 
+
+            let newHoveredId = -1;
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                if (intersect.faceIndex !== undefined && gameTriangles[intersect.faceIndex]) { 
+                    const faceIdx = intersect.faceIndex;
+                    if (gameTriangles[faceIdx].type !== 'WALL') {
+                       newHoveredId = faceIdx;
+                    }
+                }
+            }
+
+            if (newHoveredId !== hoveredTriangleId) {
+                hoveredTriangleId = newHoveredId;
+                if (gameActive && hoveredTriangleId !== -1) { 
+                    if (Tone) await ensureAudioContextStarted(); 
+                    playSound(hoverSynth, "C6", "64n");
+                }
+            }
+        }
+
+        async function onLeftMouseClick(event) { 
+            if (event.button !== 0) return; 
+            
+            if (startScreenActive) {
+                startGame(); 
+                return;
+            }
+            
+            if (gameOver || !gameActive) return; 
+
+            if (Tone) await ensureAudioContextStarted(); 
+
+            const currentTime = performance.now();
+
+            if (isAutoMoving && autoMovePath.length > 0) {
+                isAutoMoving = false;
+                autoMovePath = [];
+                clearPathHighlight();
+                playSound(pathCancelSynth, "A3", "16n");
+            }
+
+            if (hoveredTriangleId === -1 || playerTriangleId === -1 || !gameTriangles[hoveredTriangleId] || !gameTriangles[playerTriangleId]) return; 
+            if (hoveredTriangleId === playerTriangleId) return; 
+
+            const targetTriangle = gameTriangles[hoveredTriangleId];
+            if (targetTriangle.type === 'WALL') {
+                playSound(wallHitSynth, "C2", "32n");
+                return;
+            }
+
+            const playerTri = gameTriangles[playerTriangleId];
+            if (playerTri.neighbors.includes(hoveredTriangleId)) { 
+                if (currentTime - lastPlayerMoveTime < PLAYER_MOVE_COOLDOWN) return; 
+                const moveSuccessful = await movePlayerTo(hoveredTriangleId); 
+                if (moveSuccessful) {
+                    lastPlayerMoveTime = currentTime;
+                }
+            } else { 
+                const path = findShortestPath(playerTriangleId, hoveredTriangleId);
+                if (path && path.length > 0) {
+                    startAutoMove(path);
+                } else {
+                    playSound(errorSynth, null, "16n"); 
+                }
+            }
+        }
+
+        async function onDocumentMouseDown(event) { 
+            if (gameOver || !gameActive) return; 
+            if (event.button === 1) { 
+                if (Tone) await ensureAudioContextStarted(); 
+                if (isAutoMoving && autoMovePath.length > 0) {
+                    isAutoMoving = false;
+                    autoMovePath = [];
+                    clearPathHighlight();
+                    playSound(pathCancelSynth, "G3", "16n");
+                }
+            }
+        }
+
+        function onMouseWheel(event) {
+            event.preventDefault(); 
+            const zoomFactor = 1 - event.deltaY * ZOOM_SPEED;
+            let currentDistance = camera.position.length();
+            let newDistance = currentDistance / zoomFactor; 
+            newDistance = Math.max(MIN_ZOOM_DISTANCE, Math.min(MAX_ZOOM_DISTANCE, newDistance));
+            if (currentDistance !== newDistance) {
+                camera.position.normalize().multiplyScalar(newDistance);
+            }
+        }
+        
+        async function handleLifeLost(collisionSourceTriangleId) {
+            if (gameOver) return; 
+
+            playerLives--;
+            updateInfoPanel();
+            playSound(lifeLostSynth, "F#2", "4n"); 
+            triggerBackgroundFlash();
+
+            if (playerLives <= 0) {
+                gameOver = true;
+                playSound(loseSynth, ["C2", "G1", "Eb2"], "1n"); 
+                document.getElementById('gameOverScreen').style.display = 'flex';
+                
+                if (playerTriangleId !== -1 && gameTriangles[playerTriangleId]) { 
+                     gameTriangles[playerTriangleId].type = 'EMPTY'; 
+                }
+                playerTriangleId = -1; 
+            }
+        }
+        
+        async function moveEntityVisuals(entityId, oldTriangleId, newTriangleId, entityType) {
+            const oldTri = gameTriangles[oldTriangleId];
+            const newTri = gameTriangles[newTriangleId];
+
+            if (oldTri) {
+                oldTri.isWarpingOut = true;
+                oldTri.warpTime = performance.now();
+                setTimeout(() => {
+                    oldTri.isWarpingOut = false;
+                    // Korrektur: Truhen nicht überschreiben
+                    if (oldTri.type !== 'CHEST') { // Nur zurücksetzen, wenn es keine Truhe ist
+                        if (oldTri.id === startLocationId) oldTri.type = 'START';
+                        else if (oldTri.id === exitLocationId) oldTri.type = 'EXIT';
+                        else oldTri.type = 'EMPTY';
+                    }
+                }, WARP_ANIM_DURATION);
+            }
+
+            if (newTri) {
+                newTri.type = entityType; 
+                newTri.isWarpingIn = true;
+                newTri.warpTime = performance.now();
+                 setTimeout(() => {
+                    newTri.isWarpingIn = false;
+                }, WARP_ANIM_DURATION);
+            }
+        }
+
+
+        async function movePlayerTo(targetId) { 
+            if (gameOver || !gameActive || !gameTriangles[playerTriangleId] || !gameTriangles[targetId]) return false; 
+            if (Tone) await ensureAudioContextStarted(); 
+            
+            const potentialTargetTriangle = gameTriangles[targetId];
+
+            if (potentialTargetTriangle.type === 'ENEMY') {
+                await handleLifeLost(playerTriangleId); 
+                return false; 
+            }
+            
+            const oldPlayerTriangleId = playerTriangleId;
+            playerTriangleId = targetId;
+            
+            await moveEntityVisuals(playerTriangleId, oldPlayerTriangleId, targetId, 'PLAYER');
+
+            const newPlayerTriangle = gameTriangles[playerTriangleId];
+            handlePlayerInteraction(newPlayerTriangle); 
+
+            if (newPlayerTriangle.center) { 
+                const targetDir = newPlayerTriangle.center.clone().normalize();
+                targetSphereQuaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), targetDir).invert();
+            }
+
+            playSound(moveSynth, "E4", "32n");
+            updateInfoPanel(); 
+            return true; 
+        }
+
+        function handlePlayerInteraction(triangle) {
+            if (gameOver || !gameActive || !triangle) return; 
+            switch (triangle.type) { 
+                case 'KEY':
+                    playerKeysHeld++; 
+                    playSound(keyPickupSynth, ["C5", "E5", "A5"], "16n"); 
+                    triangle.type = 'EMPTY'; 
+                    updateInfoPanel();
+                    break;
+                case 'CHEST':
+                    if (playerKeysHeld > 0) { 
+                        keysDelivered += playerKeysHeld;
+                        playerKeysHeld = 0;
+                        triangle.isUsedChest = true; 
+                        playSound(chestDeliverySynth, null); 
+                        
+                        if (keysDelivered >= numKeys) {
+                        }
+                        updateInfoPanel();
+                    } else { 
+                        playSound(errorSynth, null, "16n"); 
+                    }
+                    break;
+                case 'EXIT':
+                    if (keysDelivered >= numKeys) {
+                        playSound(winSynth, ["C4", "E4", "G4", "C5"], "2n");
+                        gameOver = true; 
+                    } else {
+                        playSound(errorSynth, null, "8n"); 
+                    }
+                    break;
+            }
+        }
+        
+        function findShortestPath(startId, endId) {
+            if (!gameTriangles[startId] || !gameTriangles[endId]) return []; 
+            const queue = [[startId, [startId]]]; 
+            const visited = new Set([startId]);
+
+            while (queue.length > 0) {
+                const [currentId, path] = queue.shift();
+                if (currentId === endId) return path.slice(1); 
+                
+                const currentTriangle = gameTriangles[currentId];
+                if (!currentTriangle || !currentTriangle.neighbors) continue; 
+
+                for (const neighborId of currentTriangle.neighbors) {
+                    if (!visited.has(neighborId)) {
+                        const neighborTriangle = gameTriangles[neighborId];
+                        if (neighborTriangle && neighborTriangle.type !== 'WALL' && neighborTriangle.type !== 'ENEMY') { 
+                            visited.add(neighborId);
+                            const newPath = [...path, neighborId];
+                            queue.push([neighborId, newPath]);
+                        }
+                    }
+                }
+            }
+            return []; 
+        }
+
+        function highlightPath(path) {
+            clearPathHighlight(); 
+            path.forEach(triId => {
+                if (gameTriangles[triId]) {
+                    gameTriangles[triId].isPathSegment = true;
+                }
+            });
+        }
+
+        function clearPathHighlight() {
+            let needsUpdate = false;
+            gameTriangles.forEach(tri => {
+                if (tri.isPathSegment) {
+                    tri.isPathSegment = false;
+                    needsUpdate = true;
+                }
+            });
+        }
+
+        async function startAutoMove(path) { 
+            if (gameOver || !gameActive || !path || path.length === 0) return;
+            autoMovePath = [...path]; 
+            isAutoMoving = true;
+            
+            highlightPath(autoMovePath); 
+            if (Tone) await ensureAudioContextStarted();
+            playSound(pathStartSynth, "A4", "16n");
+            nextAutoMoveTime = performance.now() + PATH_HIGHLIGHT_DURATION; 
+        }
+
+        async function processAutoMove() { 
+            if (gameOver || !gameActive || !isAutoMoving || autoMovePath.length === 0) {
+                if (isAutoMoving) { 
+                    isAutoMoving = false;
+                    clearPathHighlight(); 
+                }
+                return;
+            }
+
+            const currentTime = performance.now();
+            if (currentTime >= nextAutoMoveTime) {
+                const nextStepId = autoMovePath.shift(); 
+                if (typeof nextStepId === 'undefined') { 
+                    isAutoMoving = false;
+                    clearPathHighlight();
+                    return;
+                }
+                
+                const moveSuccessful = await movePlayerTo(nextStepId); 
+                
+                if (moveSuccessful) {
+                    lastPlayerMoveTime = currentTime; 
+                    if (autoMovePath.length === 0) { 
+                        isAutoMoving = false;
+                        clearPathHighlight(); 
+                    } else {
+                        nextAutoMoveTime = currentTime + PLAYER_MOVE_COOLDOWN;
+                    }
+                } else { 
+                    isAutoMoving = false;
+                    autoMovePath = [];
+                    clearPathHighlight();
+                }
+            }
+        }
+
+        async function moveEnemies() { 
+            if (gameOver || !gameActive ) return; 
+            const currentTime = performance.now();
+
+            for (const enemy of enemies) { 
+                if (currentTime - enemy.lastMoveTime < ENEMY_MOVE_COOLDOWN) continue;
+
+                const currentEnemyTriangleId = enemy.currentTriangleId;
+                const currentEnemyTriangle = gameTriangles[currentEnemyTriangleId];
+                if (!currentEnemyTriangle || !currentEnemyTriangle.neighbors || currentEnemyTriangle.neighbors.length === 0) continue;
+
+                const validNeighbors = currentEnemyTriangle.neighbors.filter(nId => {
+                    const neighborTri = gameTriangles[nId];
+                    return neighborTri && neighborTri.type !== 'WALL' && neighborTri.type !== 'ENEMY'; 
+                });
+
+                if (validNeighbors.length > 0) {
+                    const nextTriangleId = validNeighbors[Math.floor(Math.random() * validNeighbors.length)];
+                    
+                    enemy.currentTriangleId = nextTriangleId; 
+                    await moveEntityVisuals(enemy.id, currentEnemyTriangleId, nextTriangleId, 'ENEMY'); 
+
+                    const newEnemyTriangle = gameTriangles[nextTriangleId];
+
+                    if (newEnemyTriangle && newEnemyTriangle.id === playerTriangleId) { 
+                        await handleLifeLost(playerTriangleId); 
+
+                        if (!gameOver) { 
+                            if(gameTriangles[playerTriangleId] && playerTriangleId !== -1) gameTriangles[playerTriangleId].type = 'EMPTY'; 
+                            
+                            playerTriangleId = startLocationId; 
+                            if(gameTriangles[playerTriangleId]) {
+                                gameTriangles[playerTriangleId].type = 'PLAYER'; 
+                                const playerStartTri = gameTriangles[playerTriangleId];
+                                if (playerStartTri && playerStartTri.center) {
+                                    const targetDir = playerStartTri.center.clone().normalize();
+                                    targetSphereQuaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), targetDir).invert();
+                                }
+                            }
+                        }
+                        if (!gameOver || playerTriangleId === -1) {
+                           newEnemyTriangle.type = 'ENEMY'; 
+                        }
+                        
+                    } 
+                    enemy.lastMoveTime = currentTime;
+                }
+            }
+        }
+
+        function updateInfoPanel() {
+            document.getElementById('livesInfo').textContent = `Leben: ${playerLives} / ${MAX_PLAYER_LIVES}`;
+            document.getElementById('keysInfo').textContent = `Schlüssel: ${playerKeysHeld} | Ziel: ${numKeys}`;
+            document.getElementById('chestsInfo').textContent = `Abgelegt: ${keysDelivered} / ${numChests}`;
+        }
+
+        async function animate() { 
+            requestAnimationFrame(animate);
+
+            const currentTime = performance.now();
+
+            if (ambientLight) {
+                const intensityPulse = (Math.sin(currentTime * 0.0005) + 1) / 2 * 0.3 + 0.5; 
+                ambientLight.intensity = intensityPulse;
+            }
+            
+            if (!gameOver) {
+                 updateTriangleColors(hoveredTriangleId, gameActive && hoveredTriangleId !== -1);
+            }
+
+
+            if (sphereGroup && !sphereGroup.quaternion.equals(targetSphereQuaternion)) { 
+                sphereGroup.quaternion.slerp(targetSphereQuaternion, 0.07); 
+            }
+            
+            if (gameActive && !gameOver) { 
+                if (isAutoMoving) {
+                    await processAutoMove(); 
+                }
+                await moveEnemies(); 
+            }
+            
+            if (renderer && scene && camera) { 
+                renderer.render(scene, camera);
+            }
+        }
+
+        try {
+            init(); 
+        } catch (error) {
+            console.error("Fehler während der Initialisierung des Spiels:", error);
+            const body = document.querySelector('body');
+            if (body) {
+                body.innerHTML = '<div style="color: red; padding: 20px; text-align: center; font-size: 1.2em;">Ein Fehler ist beim Laden des Spiels aufgetreten. Bitte überprüfen Sie die Browser-Konsole für Details.</div>';
+            }
+        }
+    </script>
+</body>
+</html>
